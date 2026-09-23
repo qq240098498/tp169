@@ -3,6 +3,7 @@ const { load, save, nextId } = require('./store');
 const pricing = require('./pricing');
 const zones = require('./zones');
 const { findCustomer } = require('./customers');
+const periodUtil = require('./period');
 
 const SERVICES = ['保价', '签收', '上门'];
 
@@ -24,7 +25,9 @@ function decorate(waybill, data) {
     locked: Boolean(waybill.billId),
     weightText: Number(waybill.weightKg).toFixed(2) + ' kg',
     volumeText: Number(waybill.volumeM3).toFixed(3) + ' m³',
-    createdAtText: String(waybill.createdAt || '').replace('T', ' ').slice(0, 16),
+    // 创建时刻统一按北京时间（UTC+8）展示，账期也按这个时刻的年月归属
+    period: periodUtil.periodOf(waybill),
+    createdAtText: periodUtil.localText(waybill.createdAt),
   });
 }
 
@@ -33,10 +36,12 @@ function listWaybills(query) {
   const keyword = String((query && query.keyword) || '').trim();
   const customerId = String((query && query.customerId) || '').trim();
   const status = String((query && query.status) || '').trim();
+  const period = String((query && query.period) || '').trim();
   const unzoned = String((query && query.unzoned) || '').trim() === '1';
   let items = data.waybills.map((waybill) => decorate(waybill, data));
   if (customerId) items = items.filter((item) => item.customerId === customerId);
   if (status) items = items.filter((item) => item.status === status);
+  if (period) items = items.filter((item) => item.period === period);
   if (unzoned) items = items.filter((item) => !item.zoneKnown);
   if (keyword) {
     const needle = keyword.toLowerCase();
@@ -53,6 +58,17 @@ function listWaybills(query) {
 
 function findWaybill(data, id) {
   return data.waybills.find((waybill) => waybill.id === id) || null;
+}
+
+// 页面录入的创建时刻是北京时间墙上时间：
+// 带时区（Z / +08:00）的原样换算；不带时区的按 UTC+8 解释，再统一存成 ISO，
+// 这样月末 23 点录入的运单不会被当成 UTC 月初、月初凌晨的也不会落到上个月。
+function normalizeCreatedAt(value) {
+  const text = String(value == null ? '' : value).trim().replace(' ', 'T');
+  if (!text) return '';
+  const hasZone = /[zZ]$|[+-][0-9]{2}:?[0-9]{2}$/.test(text);
+  const date = new Date(hasZone ? text : text + '+08:00');
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
 function validateWaybillPayload(payload, current) {
@@ -85,10 +101,12 @@ function validateWaybillPayload(payload, current) {
   if (services.includes('保价') && !(insuredAmountYuan > 0)) {
     throw badRequest('WAYBILL_INSURED_REQUIRED', '选了保价就要填保价金额', { field: 'insuredAmountYuan' });
   }
-  const createdAt = String(next.createdAt || '').trim();
-  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(createdAt)) {
+  const createdAtRaw = String(next.createdAt || '').trim();
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(createdAtRaw)) {
     throw badRequest('WAYBILL_CREATED_INVALID', '创建时刻要形如 2026-09-01 10:30', { field: 'createdAt' });
   }
+  const createdAt = normalizeCreatedAt(createdAtRaw);
+  if (!createdAt) throw badRequest('WAYBILL_CREATED_INVALID', '创建时刻要形如 2026-09-01 10:30（按北京时间）', { field: 'createdAt' });
   return { code, customerId, fromCity, toCity, status, weightKg, volumeM3, pieces, insuredAmountYuan, services, createdAt };
 }
 

@@ -24,7 +24,7 @@
     waybills: { waybills: [], total: 0, lockedCount: 0, unzonedCount: 0 },
     bills: { bills: [], total: 0, issued: 0, voided: 0 },
     periods: [],
-    filters: { keyword: '', customerId: '', status: '', unzoned: false },
+    filters: { keyword: '', customerId: '', status: '', period: '', unzoned: false },
     zoneFilter: { keyword: '', status: '' },
     customerFilter: { keyword: '', settle: '', status: '' },
     selectedWaybillId: '',
@@ -36,6 +36,7 @@
     selectedBillId: '',
     billDetail: null,
     billLoading: false,
+    billPreview: null,        // 出账前按账期+客户核对出的候选运单信息
     quote: null,              // 最近一次单条计费结果
     confirm: null             // { kind, id } 二次确认删除
   };
@@ -64,17 +65,43 @@
 
   function pad2(n) { return n < 10 ? '0' + n : String(n); }
 
+  // 与后端同一口径：所有时刻都按北京时间（UTC+8）展示，账期也按北京时间年月归属
+  function bjText(value, withSeconds) {
+    if (!value) return '';
+    var d = new Date(String(value).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(value).replace('T', ' ').slice(0, withSeconds ? 19 : 16);
+    var s = new Date(d.getTime() + 8 * 60 * 60000);
+    var text = s.getUTCFullYear() + '-' + pad2(s.getUTCMonth() + 1) + '-' + pad2(s.getUTCDate()) +
+      ' ' + pad2(s.getUTCHours()) + ':' + pad2(s.getUTCMinutes());
+    if (withSeconds) text += ':' + pad2(s.getUTCSeconds());
+    return text;
+  }
+
+  // 新增运单时表单里的默认时刻：按北京时间给「现在」，保证录的就是本地墙上时间
   function nowText() {
-    var d = new Date();
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return bjText(new Date().toISOString());
   }
   function stampText(iso) {
     if (!iso) return '—';
-    return String(iso).replace('T', ' ').slice(0, 19);
+    return bjText(iso, true);
   }
   function timeTextOf(value) {
-    if (!value) return '';
-    return String(value).replace('T', ' ').slice(0, 16);
+    return bjText(value);
+  }
+  // 账期下拉来自 /api/periods：{ period, startText, endText, waybillCount, ... }
+  function periodInfo(period) {
+    return (state.periods || []).filter(function (p) { return p && p.period === period; })[0] || null;
+  }
+  // 当前清单里运单的最早 / 最晚创建时刻（按时间戳比较，混有时区写法也不会错）
+  function listRange(items) {
+    var first = null, last = null;
+    (items || []).forEach(function (item) {
+      var ms = new Date(String(item.createdAt || '').replace(' ', 'T')).getTime();
+      if (!isFinite(ms)) return;
+      if (!first || ms < first.ms) first = { ms: ms, value: item.createdAt };
+      if (!last || ms > last.ms) last = { ms: ms, value: item.createdAt };
+    });
+    return { first: first ? first.value : '', last: last ? last.value : '' };
   }
   // 千分比折算成「折」：900 千分比 = 9.0 折
   function discountTextOf(permille) {
@@ -128,11 +155,46 @@
   function loadPeriods() { return api('GET', '/api/periods').then(function (r) { state.periods = (r && r.periods) || []; }); }
   function loadBills() { return api('GET', '/api/bills').then(function (r) { state.bills = r || { bills: [], total: 0, issued: 0, voided: 0 }; }); }
 
+  function paintBillPreview() {
+    var box = document.getElementById('billPreviewBox');
+    if (box) box.innerHTML = billPreviewHtml(state.billPreview);
+  }
+
+  // 出账前核对：按当前账期 + 客户问后端要候选运单条数与起止时刻
+  function loadBillPreview(period, customerId) {
+    if (!period || !customerId) {
+      state.billPreview = null;
+      paintBillPreview();
+      return Promise.resolve();
+    }
+    return api('POST', '/api/bills/preview', { period: period, customerId: customerId }).then(function (r) {
+      state.billPreview = r;
+      paintBillPreview();
+    }).catch(function (err) {
+      // 校验类错误（账期格式不对等）在核对区就地提示，不弹顶部红条
+      state.billPreview = {
+        canGenerate: false,
+        customer: null,
+        check: { periodStartText: '', periodEndText: '', waybillCount: 0, firstWaybillText: '', lastWaybillText: '' },
+        message: err.message || '核对失败',
+      };
+      paintBillPreview();
+    });
+  }
+
+  var scheduleBillPreview = debounce(function () {
+    var periodEl = document.getElementById('billPeriod');
+    var customerEl = document.getElementById('billCustomerId');
+    if (!periodEl || !customerEl) return;
+    loadBillPreview(periodEl.value.trim(), customerEl.value.trim());
+  }, 300);
+
   function waybillQuery() {
     var qs = [];
     if (state.filters.keyword) qs.push('keyword=' + encodeURIComponent(state.filters.keyword));
     if (state.filters.customerId) qs.push('customerId=' + encodeURIComponent(state.filters.customerId));
     if (state.filters.status) qs.push('status=' + encodeURIComponent(state.filters.status));
+    if (state.filters.period) qs.push('period=' + encodeURIComponent(state.filters.period));
     if (state.filters.unzoned) qs.push('unzoned=1');
     return qs.length ? ('?' + qs.join('&')) : '';
   }
@@ -330,8 +392,12 @@
 
     var periods = s.periods || [];
     var periodHtml = periods.length
-      ? '<div class="chips">' + periods.map(function (p) { return '<span class="chip">' + esc(p) + '</span>'; }).join('') + '</div>'
-      : '<p class="block-hint">还没有可用的账期（账期按运单创建月份归集）。</p>';
+      ? '<div class="chips">' + periods.map(function (p) {
+        return '<button type="button" class="chip chip-btn" data-action="goto-period" data-period="' + attr(p.period) + '" title="' +
+          attr('账期 ' + p.period + '：' + p.startText + ' 至 ' + p.endText) + '">' +
+        esc(p.period) + '（' + num(p.waybillCount) + ' 条）</button>';
+      }).join('') + '</div>'
+      : '<p class="block-hint">还没有可用的账期（账期按运单创建时刻的北京时间年月归集）。</p>';
 
     var st = s.settings || {};
     var settingsHtml =
@@ -346,7 +412,9 @@
     var body =
       '<div class="block"><h3 class="block-title">未归属城市（' + num(cities.length) + ' 个）</h3>' +
       '<p class="block-hint">这些收件城市没有登记到任何分区，对应的运单算不出运费、也进不了账单。</p>' + cityHtml + '</div>' +
-      '<div class="block"><h3 class="block-title">已有账期（' + num(periods.length) + ' 个）</h3>' + periodHtml + '</div>' +
+      '<div class="block"><h3 class="block-title">已有账期（' + num(periods.length) + ' 个）</h3>' +
+      '<p class="block-hint">账期按运单创建时刻的<b>北京时间（UTC+8）年月</b>归属：月初 0 点起、月末 24 点止的运单才算当月，月初凌晨那几小时不会再落到上个月。点账期可按它筛运单。</p>' +
+      periodHtml + '</div>' +
       '<div class="block"><h3 class="block-title">计费参数</h3>' + settingsHtml + '</div>';
 
     return paneBlock('关注项与参数', '', body);
@@ -366,6 +434,22 @@
     var statusOptions = '<option value="">全部状态</option>' + STATUSES.map(function (s) {
       return '<option value="' + attr(s) + '"' + (f.status === s ? ' selected' : '') + '>' + esc(s) + '</option>';
     }).join('');
+    var periodOptions = '<option value="">全部账期</option>' + (state.periods || []).map(function (p) {
+      return '<option value="' + attr(p.period) + '"' + (f.period === p.period ? ' selected' : '') + '>' +
+        esc(p.period + '（' + p.waybillCount + ' 条）') + '</option>';
+    }).join('');
+
+    // 选中账期后，把「账期起止」和「当前清单实际起止」摆在一起核对边界运单
+    var info = f.period ? periodInfo(f.period) : null;
+    var range = listRange((state.waybills.waybills || []));
+    var periodRangeHtml = info
+      ? '<div class="stat-list">' +
+        '<div class="stat-row"><span class="stat-name">账期起（北京时间）</span><span class="stat-val mono">' + esc(info.startText) + '</span></div>' +
+        '<div class="stat-row"><span class="stat-name">账期止（北京时间）</span><span class="stat-val mono">' + esc(info.endText) + '</span></div>' +
+        '<div class="stat-row"><span class="stat-name">清单最早运单</span><span class="stat-val mono" id="listFirstAt">' + esc(range.first ? timeTextOf(range.first) : '—') + '</span></div>' +
+        '<div class="stat-row"><span class="stat-name">清单最晚运单</span><span class="stat-val mono" id="listLastAt">' + esc(range.last ? timeTextOf(range.last) : '—') + '</span></div>' +
+        '</div>'
+      : '<p class="block-hint">选一个账期后，这里显示该账期的起止时刻和当前清单里运单的最早 / 最晚创建时刻，方便核对月初月末的边界运单。</p>';
 
     var body =
       '<div class="block"><h3 class="block-title">筛选</h3>' +
@@ -373,6 +457,8 @@
       '<input type="search" id="wbKeyword" placeholder="运单号 / 城市 / 客户" value="' + attr(f.keyword) + '"></label>' +
       '<label class="field" data-field-wrap="filter-customer"><span class="field-label">客户</span>' +
       '<select id="wbCustomer">' + customerOptionsHtml(f.customerId, '全部客户') + '</select></label>' +
+      '<label class="field"><span class="field-label">账期（北京时间年月）</span>' +
+      '<select id="wbPeriod">' + periodOptions + '</select></label>' +
       '<label class="field"><span class="field-label">状态</span>' +
       '<select id="wbStatus">' + statusOptions + '</select></label>' +
       '<label class="check"><input type="checkbox" id="wbUnzoned"' + (f.unzoned ? ' checked' : '') + '>只看未归属城市</label>' +
@@ -381,6 +467,7 @@
       '<button type="button" class="btn btn-primary" data-action="apply-filters">查询</button>' +
       '<button type="button" class="btn btn-ghost" data-action="reset-filters">重置</button>' +
       '</div>' +
+      '<div class="block"><h3 class="block-title">账期起止核对</h3>' + periodRangeHtml + '</div>' +
       '<div class="block"><h3 class="block-title">清单统计</h3>' +
       '<div class="stat-list">' +
       '<div class="stat-row"><span class="stat-name">当前清单</span><span class="stat-val">' + num(state.waybills.total) + ' 条</span></div>' +
@@ -389,6 +476,7 @@
       '</div></div>' +
       '<button type="button" class="btn btn-amber btn-block" data-action="new-waybill">新增运单</button>' +
       '<button type="button" class="btn btn-ghost btn-block" data-action="refresh-waybills">刷新运单清单</button>' +
+      '<p class="foot-note">账期按创建时刻的北京时间（UTC+8）年月归属：例如 9 月 1 日 02:30 创建的运单属于 2026-09，不会因 UTC 还在 8 月 31 日而挂进 8 月账单。</p>' +
       (state.customers.length === 0 ? '<p class="foot-note warn-text">还没有客户，先到「客户」标签新增一个客户，运单必须挂在客户名下。</p>' : '');
 
     return paneBlock('筛选与统计', 'GET /api/waybills', body);
@@ -417,6 +505,7 @@
         '<div class="card-metric">件数<b>' + esc(num(item.pieces)) + ' 件</b></div>' +
         '</div>' +
         '<div class="card-tags">' +
+        '<span class="tag tag-period">账期 ' + esc(item.period || '—') + '</span>' +
         '<span class="tag">分区 ' + esc(item.zoneName) + '</span>' +
         '<span class="tag' + (item.locked ? ' tag-lock' : '') + '">' + (item.locked ? ('已入账 ' + esc(item.billCode)) : '未入账') + '</span>' +
         '<span class="tag' + (cached > 0 ? ' tag-amber' : '') + '">上次计费 ' + (cached > 0 ? esc(money(cached)) : '未计费') + '</span>' +
@@ -470,15 +559,15 @@
       '<select data-field="status">' + statusOptions + '</select><span class="field-msg"></span></label>' +
       '<div class="field" data-field-wrap="services"><span class="field-label">附加服务</span>' +
       '<div class="check-inline-row">' + serviceBoxes + '</div><span class="field-msg"></span></div>' +
-      '<label class="field" data-field-wrap="createdAt"><span class="field-label">创建时刻（决定账期）</span>' +
-      '<input type="text" data-field="createdAt" placeholder="2026-09-01 10:30" value="' + attr(createdAt) + '">' +
+      '<label class="field" data-field-wrap="createdAt"><span class="field-label">创建时刻（北京时间，决定账期）</span>' +
+      '<input type="text" data-field="createdAt" placeholder="2026-09-01 02:30" value="' + attr(createdAt) + '">' +
       '<span class="field-msg"></span></label>' +
       '</div>' +
       '<div class="btn-row">' +
       '<button type="button" class="btn btn-primary" data-action="save-waybill">' + (isEdit ? '保存修改' : '创建运单') + '</button>' +
       '<button type="button" class="btn btn-ghost" data-action="cancel-waybill-form">取消</button>' +
       '</div>' +
-      '<p class="foot-note">选了「保价」就要填大于 0 的保价金额；账期按创建时刻所在月份归集。</p>' +
+      '<p class="foot-note">创建时刻按北京时间（UTC+8）填写，账期取它的年月：9 月 1 日 02:30 属于 2026-09，不会落到 8 月。选了「保价」就要填大于 0 的保价金额。</p>' +
       '</form>';
   }
 
@@ -529,7 +618,8 @@
       '<dt>件数</dt><dd>' + esc(num(item.pieces)) + ' 件</dd>' +
       '<dt>保价金额</dt><dd>' + esc(money(item.insuredAmountYuan)) + ' 元</dd>' +
       '<dt>附加服务</dt><dd>' + esc((item.services && item.services.length) ? item.services.join('、') : '无') + '</dd>' +
-      '<dt>创建时刻</dt><dd>' + esc(timeTextOf(item.createdAt)) + '</dd>' +
+      '<dt>创建时刻</dt><dd>' + esc(timeTextOf(item.createdAt)) + '（北京时间 UTC+8）</dd>' +
+      '<dt>账期</dt><dd class="is-amber">' + esc(item.period || '—') + '（按创建时刻的北京时间年月归属）</dd>' +
       '<dt>分区</dt><dd class="' + (item.zoneKnown ? '' : 'is-warn') + '">' + esc(item.zoneName) + (item.zoneKnown ? '' : '（该城市未登记分区，不能计费）') + '</dd>' +
       '<dt>入账情况</dt><dd class="' + (item.locked ? 'is-amber' : '') + '">' + (item.locked ? ('已入账：' + esc(item.billCode) + '（' + esc(item.billStatus) + '）') : '未入账') + '</dd>' +
       '<dt>上次计费</dt><dd class="' + (cached > 0 ? 'is-amber' : '') + '">' + (cached > 0 ? (esc(money(cached)) + ' 元（' + esc(timeTextOf(item.quoteCachedAt)) + '）') : '未计费') + '</dd>' +
@@ -1046,9 +1136,33 @@
   /* ================= 账单 ================= */
   function defaultPeriod() {
     var periods = state.periods || [];
-    if (periods.length) return periods[periods.length - 1];
-    var d = new Date();
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+    if (periods.length) return periods[periods.length - 1].period;
+    var d = new Date(Date.now() + 8 * 60 * 60000);
+    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1);
+  }
+
+  function billPeriodOptions() {
+    return (state.periods || []).map(function (p) {
+      return '<option value="' + attr(p.period) + '"></option>';
+    }).join('');
+  }
+
+  function billPreviewHtml(preview) {
+    if (!preview) {
+      return '<p class="block-hint">选好账期与客户后会自动核对：列出该账期的起止时刻、可出账运单条数和这些运单的最早 / 最晚创建时刻。</p>';
+    }
+    var c = preview.check || {};
+    var ok = preview.canGenerate;
+    return '<div class="panel ' + (ok ? 'is-amber' : '') + '">' +
+      '<div class="amount-row"><span>核对客户</span><b>' + esc((preview.customer && preview.customer.name) || '—') + '</b></div>' +
+      '<div class="amount-row"><span>账期起（北京时间）</span><b class="mono">' + esc(c.periodStartText) + '</b></div>' +
+      '<div class="amount-row"><span>账期止（北京时间）</span><b class="mono">' + esc(c.periodEndText) + '</b></div>' +
+      '<div class="amount-row"><span>可出账运单</span><b>' + num(c.waybillCount) + ' 条</b></div>' +
+      '<div class="amount-row"><span>最早运单创建</span><b class="mono">' + esc(c.firstWaybillText || '—') + '</b></div>' +
+      '<div class="amount-row"><span>最晚运单创建</span><b class="mono">' + esc(c.lastWaybillText || '—') + '</b></div>' +
+      '</div>' +
+      '<p class="foot-note ' + (ok ? '' : 'warn-text') + '">' + esc(preview.message || '') + '</p>' +
+      '<p class="foot-note">账期口径：按运单创建时刻的北京时间（UTC+8）年月归属，月初 0 点到月末 24 点之间的运单算当月。</p>';
   }
 
   function renderBillsLeft() {
@@ -1056,20 +1170,18 @@
     var issuedAmount = bills.reduce(function (sum, bill) {
       return bill.status === '已出账' ? sum + Number(bill.amountYuan || 0) : sum;
     }, 0);
-    var periodOptions = (state.periods || []).map(function (p) {
-      return '<option value="' + attr(p) + '"></option>';
-    }).join('');
     var body =
       '<div class="block"><h3 class="block-title">出账</h3>' +
       '<label class="field" data-field-wrap="period"><span class="field-label">账期（形如 2026-09）</span>' +
       '<input type="text" id="billPeriod" list="periodList" placeholder="2026-09" value="' + attr(defaultPeriod()) + '">' +
-      '<datalist id="periodList">' + periodOptions + '</datalist>' +
+      '<datalist id="periodList">' + billPeriodOptions() + '</datalist>' +
       '<span class="field-msg"></span></label>' +
       '<label class="field" data-field-wrap="customerId"><span class="field-label">客户</span>' +
       '<select id="billCustomerId">' + customerOptionsHtml('', '请选择客户') + '</select>' +
       '<span class="field-msg"></span></label>' +
+      '<div class="block" style="margin:8px 0;"><h3 class="block-title">出账前核对</h3><div id="billPreviewBox">' + billPreviewHtml(state.billPreview) + '</div></div>' +
       '<button type="button" class="btn btn-primary btn-block" data-action="generate-bill">按账期与客户出账</button>' +
-      '<p class="foot-note">可选账期来自现有运单与账单（GET /api/periods）。同一账期同一客户可以重复出账，编号会自动顺延。</p>' +
+      '<p class="foot-note">先核对候选运单条数与起止时刻无误再出账。同一账期同一客户可以重复出账，编号会自动顺延。</p>' +
       '</div>' +
       '<div class="block"><h3 class="block-title">账单统计</h3>' +
       '<div class="stat-list">' +
@@ -1079,7 +1191,7 @@
       '<div class="stat-row"><span class="stat-name">已出账金额</span><span class="stat-val">' + money(issuedAmount) + ' 元</span></div>' +
       '</div></div>' +
       '<button type="button" class="btn btn-ghost btn-block" data-action="refresh-bills">刷新账单清单</button>';
-    return paneBlock('出账与统计', 'GET /api/bills', body);
+    return paneBlock('出账与统计', 'POST /api/bills/preview', body);
   }
 
   function renderBillsMid() {
@@ -1120,11 +1232,17 @@
       return paneBlock('账单详情', '', emptyBlock('还没有选中账单', '在中间清单里点一张账单查看逐条明细，或先在左侧出账。'));
     }
     var lines = bill.lines || [];
+    var waybillMap = {};
+    (bill.waybills || []).forEach(function (w) { waybillMap[w.id] = w; });
     var rows = lines.map(function (line) {
-      return '<tr>' +
+      var w = waybillMap[line.waybillId] || {};
+      var wrongPeriod = w.period && w.period !== bill.period;
+      return '<tr' + (wrongPeriod ? ' class="row-warn"' : '') + '>' +
         '<td>' + esc(line.code) + '</td>' +
         '<td>' + esc(line.toCity) + '</td>' +
         '<td>' + esc(line.zoneName || '-') + '</td>' +
+        '<td class="num mono">' + esc(w.createdAtText || '-') + '</td>' +
+        '<td' + (wrongPeriod ? ' class="num is-warn"' : '') + '>' + esc(w.period || '-') + '</td>' +
         '<td class="num">' + esc(line.billableText || kg(line.billableKg)) + '</td>' +
         '<td class="num">' + esc(line.amountText || money(line.amountYuan)) + '</td>' +
         '<td>' + (line.fromCache ? '取自上次计费' : '本次计算') + '</td>' +
@@ -1133,21 +1251,35 @@
 
     var table = lines.length
       ? '<div class="table-wrap"><table><thead><tr>' +
-      '<th>运单号</th><th>收件城市</th><th>分区</th><th class="num">计费重量</th><th class="num">金额(元)</th><th>计费来源</th>' +
+      '<th>运单号</th><th>收件城市</th><th>分区</th><th>创建时刻(北京)</th><th>账期</th><th class="num">计费重量</th><th class="num">金额(元)</th><th>计费来源</th>' +
       '</tr></thead><tbody>' + rows + '</tbody>' +
-      '<tfoot><tr class="tfoot-row"><td colspan="4">明细合计</td><td class="num">' + esc(bill.lineSumText || money(bill.lineSumYuan)) + '</td><td>' + esc(num(bill.waybillCount)) + ' 条</td></tr></tfoot>' +
+      '<tfoot><tr class="tfoot-row"><td colspan="6">明细合计</td><td class="num">' + esc(bill.lineSumText || money(bill.lineSumYuan)) + '</td><td>' + esc(num(bill.waybillCount)) + ' 条</td></tr></tfoot>' +
       '</table></div>'
       : emptyBlock('这张账单没有明细行', '可以作废后重新出账。');
+
+    // 账单明细里的运单若按当前口径不属于本账期，明确标出来（历史数据修复后应不再出现）
+    var stray = (bill.waybills || []).filter(function (w) { return w.period && w.period !== bill.period; });
+    var strayHtml = stray.length
+      ? '<div class="panel is-warn"><h4 class="panel-title">账期对不上（' + num(stray.length) + ' 条）</h4>' +
+      stray.map(function (w) {
+        return '<div class="amount-row"><span>' + esc(w.code) + '</span><b>按北京时间属于 ' + esc(w.period) + '</b></div>';
+      }).join('') +
+      '<p class="foot-note warn-text">这些运单的创建时刻按北京时间不属于本账期，请作废本账单后按新口径重新出账。</p></div>'
+      : '';
 
     var head =
       '<div class="detail-head">' +
       '<span class="detail-title">' + esc(bill.code) + '</span>' +
       '<span class="badge ' + (bill.status === '已出账' ? 'st-transit' : 'st-return') + '">' + esc(bill.status) + '</span>' +
       '</div>' +
+      strayHtml +
       '<dl class="kv-list">' +
-      '<dt>账期</dt><dd>' + esc(bill.period) + '</dd>' +
+      '<dt>账期</dt><dd>' + esc(bill.period) + '（按北京时间 UTC+8 年月）</dd>' +
+      '<dt>账期起止</dt><dd class="mono">' + esc(bill.periodStartText || '—') + ' 至 ' + esc(bill.periodEndText || '—') + '</dd>' +
       '<dt>客户</dt><dd>' + esc(bill.customerName) + '（' + esc(bill.customerCode || '-') + '）</dd>' +
       '<dt>明细条数</dt><dd>' + esc(num(bill.waybillCount)) + ' 条</dd>' +
+      '<dt>最早运单创建</dt><dd class="mono">' + esc(bill.firstWaybillText || '—') + '</dd>' +
+      '<dt>最晚运单创建</dt><dd class="mono">' + esc(bill.lastWaybillText || '—') + '</dd>' +
       '<dt>折扣</dt><dd>' + esc(discountTextOf(bill.discountPermille)) + '</dd>' +
       '<dt>创建时刻</dt><dd>' + esc(timeTextOf(bill.createdAt)) + '</dd>' +
       '<dt>作废时刻</dt><dd>' + esc(bill.voidedAt ? timeTextOf(bill.voidedAt) : '—') + '</dd>' +
@@ -1203,15 +1335,19 @@
     var customerEl = document.getElementById('billCustomerId');
     if (!periodEl || !customerEl) return;
     clearFieldErrors();
-    var payload = { period: String(periodEl.value).trim(), customerId: String(customerEl.value).trim() };
+    var period = String(periodEl.value).trim();
+    var customerId = String(customerEl.value).trim();
     try {
-      var created = await api('POST', '/api/bills/generate', payload);
+      var created = await api('POST', '/api/bills/generate', { period: period, customerId: customerId });
       state.selectedBillId = created.id;
       state.confirm = null;
       await refreshAll();
       render();
       await loadBillDetail(created.id);
-      ok('已出账：' + created.code + '（' + created.customerName + ' · ' + created.period + '，金额 ' + money(created.amountYuan) + ' 元）');
+      var c = created.check || {};
+      ok('已出账：' + created.code + '（' + created.customerName + ' · ' + created.period +
+        '，共 ' + num(c.waybillCount) + ' 条，' + (c.firstWaybillText || '—') + ' 至 ' + (c.lastWaybillText || '—') +
+        '，金额 ' + money(created.amountYuan) + ' 元）');
     } catch (err) {
       fail(err);
     }
@@ -1258,6 +1394,7 @@
     if (!TAB_LABELS[key]) return;
     state.tab = key;
     state.confirm = null;
+    if (key === 'bills') state.billPreview = null;
     renderTabs();
     render();
     try {
@@ -1274,25 +1411,37 @@
     var keyword = document.getElementById('wbKeyword');
     var customer = document.getElementById('wbCustomer');
     var status = document.getElementById('wbStatus');
+    var period = document.getElementById('wbPeriod');
     var unzoned = document.getElementById('wbUnzoned');
     state.filters.keyword = keyword ? keyword.value.trim() : '';
     state.filters.customerId = customer ? customer.value : '';
     state.filters.status = status ? status.value : '';
+    state.filters.period = period ? period.value : '';
     state.filters.unzoned = unzoned ? unzoned.checked : false;
     clearNotice();
     loadWaybills().then(function () {
       renderList();
+      renderLeft();
       setStatus('运单清单已按筛选条件刷新，共 ' + state.waybills.total + ' 条');
     }).catch(fail);
   }
 
   function resetFilters() {
-    state.filters = { keyword: '', customerId: '', status: '', unzoned: false };
+    state.filters = { keyword: '', customerId: '', status: '', period: '', unzoned: false };
     renderLeft();
     loadWaybills().then(function () {
       renderList();
+      renderLeft();
       setStatus('已重置运单筛选条件，共 ' + state.waybills.total + ' 条');
     }).catch(fail);
+  }
+
+  function refreshListRangeCells() {
+    var range = listRange((state.waybills.waybills || []));
+    var firstEl = document.getElementById('listFirstAt');
+    var lastEl = document.getElementById('listLastAt');
+    if (firstEl) firstEl.textContent = range.first ? timeTextOf(range.first) : '—';
+    if (lastEl) lastEl.textContent = range.last ? timeTextOf(range.last) : '—';
   }
 
   var liveWaybillFilter = debounce(function () {
@@ -1301,6 +1450,7 @@
     state.filters.keyword = keyword.value.trim();
     loadWaybills().then(function () {
       renderList();
+      refreshListRangeCells();
       setStatus('已按关键词「' + (state.filters.keyword || '空') + '」筛出 ' + state.waybills.total + ' 条运单');
     }).catch(fail);
   }, 280);
@@ -1308,13 +1458,19 @@
   function onLeftInput(event) {
     var el = event.target;
     if (el.id === 'wbKeyword') { liveWaybillFilter(); return; }
+    if (el.id === 'billPeriod') { scheduleBillPreview(); return; }
     if (el.id === 'zoneKeyword') { state.zoneFilter.keyword = el.value; renderMid(); return; }
     if (el.id === 'customerKeyword') { state.customerFilter.keyword = el.value; renderMid(); return; }
   }
 
   function onLeftChange(event) {
     var el = event.target;
-    if (el.id === 'wbCustomer' || el.id === 'wbStatus' || el.id === 'wbUnzoned') { applyFilters(); return; }
+    if (el.id === 'wbCustomer' || el.id === 'wbStatus' || el.id === 'wbUnzoned' || el.id === 'wbPeriod') { applyFilters(); return; }
+    if (el.id === 'billCustomerId') {
+      var periodEl = document.getElementById('billPeriod');
+      loadBillPreview(periodEl ? periodEl.value.trim() : '', el.value.trim());
+      return;
+    }
     if (el.id === 'zoneStatus') { state.zoneFilter.status = el.value; renderMid(); renderLeft(); return; }
     if (el.id === 'customerSettle') { state.customerFilter.settle = el.value; renderMid(); renderLeft(); return; }
     if (el.id === 'customerStatus') { state.customerFilter.status = el.value; renderMid(); renderLeft(); return; }
@@ -1361,6 +1517,7 @@
       case 'goto-status':
         state.tab = 'waybills';
         state.filters.status = target.getAttribute('data-status') || '';
+        state.filters.period = '';
         state.filters.unzoned = false;
         try { await refreshAll(); render(); ok('已按状态「' + state.filters.status + '」筛选运单，共 ' + state.waybills.total + ' 条'); } catch (err) { fail(err); }
         break;
@@ -1369,6 +1526,18 @@
         state.filters.unzoned = true;
         state.filters.status = '';
         try { await refreshAll(); render(); ok('已筛选未归属城市的运单，共 ' + state.waybills.total + ' 条'); } catch (err) { fail(err); }
+        break;
+      case 'goto-period':
+        state.tab = 'waybills';
+        state.filters.period = target.getAttribute('data-period') || '';
+        state.filters.status = '';
+        state.filters.unzoned = false;
+        try {
+          await refreshAll(); render();
+          var info = periodInfo(state.filters.period);
+          ok('已按账期 ' + state.filters.period + ' 筛出 ' + state.waybills.total + ' 条运单' +
+            (info ? '（账期 ' + info.startText + ' 至 ' + info.endText + '，北京时间）' : ''));
+        } catch (err) { fail(err); }
         break;
 
       case 'apply-filters': applyFilters(); break;

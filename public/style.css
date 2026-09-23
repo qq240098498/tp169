@@ -432,6 +432,10 @@ button.stat-row:hover { border-color: var(--brand-line); background: var(--brand
 .tag.tag-amber { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber-dark); }
 .tag.tag-lock { border-color: var(--brand-line); background: var(--brand-soft); color: var(--brand-dark); }
 .tag.tag-warn { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+.tag.tag-period { border-color: var(--amber-line); color: var(--amber-dark); font-weight: 600; }
+
+/* 北京时间 / 时刻统一用等宽数字 */
+.mono { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .badge {
   display: inline-block;
@@ -499,6 +503,9 @@ button.stat-row:hover { border-color: var(--brand-line); background: var(--brand
   background: var(--brand-soft);
 }
 .panel.is-amber { border-color: var(--amber-line); background: var(--amber-soft); }
+.panel.is-warn { border-color: var(--danger-line); background: var(--danger-soft); }
+.panel.is-warn .panel-title { color: var(--danger); }
+.panel.is-warn .amount-row b { color: var(--danger); }
 .panel-title { margin: 0 0 8px; font-size: 12px; font-weight: 700; color: var(--brand-dark); }
 .panel.is-amber .panel-title { color: var(--amber-dark); }
 
@@ -525,6 +532,9 @@ thead th {
 tbody td { padding: 7px 8px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--slate-soft); }
+tbody tr.row-warn td { background: var(--danger-soft); color: var(--danger); }
+tbody tr.row-warn:hover td { background: var(--danger-soft); }
+tbody td.is-warn { color: var(--danger); font-weight: 600; }
 .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tfoot-row td { background: var(--slate-soft); font-weight: 700; color: var(--brand-deep); border-top: 1px solid var(--line-strong); }
 
