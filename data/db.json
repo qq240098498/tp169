@@ -2,7 +2,7 @@
   "meta": {
     "name": "运单计费与账单核对台",
     "currency": "CNY",
-    "updatedAt": "2026-09-22T12:48:30.802Z"
+    "updatedAt": "2026-09-23T13:51:18.861Z"
   },
   "settings": {
     "volumetricDivisor": 6000,
@@ -257,7 +257,7 @@
       "services": [],
       "status": "已签收",
       "createdAt": "2026-09-01T02:30:00+08:00",
-      "billId": "bill-0004",
+      "billId": null,
       "quoteCacheYuan": null
     },
     {
@@ -545,7 +545,13 @@
       ],
       "amountYuan": 53.41,
       "discountPermille": 980,
-      "voidedAt": "2026-09-22T12:48:30.747Z"
+      "voidedAt": "2026-09-22T12:48:30.747Z",
+      "periodZone": "北京时间（UTC+8）",
+      "periodStartAt": "2026-06-30T16:00:00.000Z",
+      "periodEndAt": "2026-07-31T16:00:00.000Z",
+      "periodWaybillCount": 4,
+      "firstCreatedAt": "2026-07-05T09:00:00+08:00",
+      "lastCreatedAt": "2026-07-28T17:10:00+08:00"
     },
     {
       "id": "bill-0002",
@@ -609,7 +615,13 @@
         }
       ],
       "amountYuan": 112.21,
-      "discountPermille": 980
+      "discountPermille": 980,
+      "periodZone": "北京时间（UTC+8）",
+      "periodStartAt": "2026-07-31T16:00:00.000Z",
+      "periodEndAt": "2026-08-31T16:00:00.000Z",
+      "periodWaybillCount": 5,
+      "firstCreatedAt": "2026-08-04T09:40:00+08:00",
+      "lastCreatedAt": "2026-08-26T10:10:00+08:00"
     },
     {
       "id": "bill-0003",
@@ -673,7 +685,13 @@
         }
       ],
       "amountYuan": 112.21,
-      "discountPermille": 980
+      "discountPermille": 980,
+      "periodZone": "北京时间（UTC+8）",
+      "periodStartAt": "2026-07-31T16:00:00.000Z",
+      "periodEndAt": "2026-08-31T16:00:00.000Z",
+      "periodWaybillCount": 5,
+      "firstCreatedAt": "2026-08-04T09:40:00+08:00",
+      "lastCreatedAt": "2026-08-26T10:10:00+08:00"
     },
     {
       "id": "bill-0004",
@@ -689,8 +707,7 @@
         "wb-0004",
         "wb-0005",
         "wb-0006",
-        "wb-0007",
-        "wb-0008"
+        "wb-0007"
       ],
       "lines": [
         {
@@ -716,8 +733,8 @@
           "code": "YD20260807003",
           "toCity": "江城",
           "zoneName": "同城",
-          "billableKg": 13,
-          "amountYuan": 38.05,
+          "billableKg": 18.5,
+          "amountYuan": 54.15,
           "fromCache": false
         },
         {
@@ -755,19 +772,16 @@
           "billableKg": 32.5,
           "amountYuan": 114.14,
           "fromCache": false
-        },
-        {
-          "waybillId": "wb-0008",
-          "code": "YD20260901008",
-          "toCity": "海陵",
-          "zoneName": "同城",
-          "billableKg": 5.5,
-          "amountYuan": 16.1,
-          "fromCache": false
         }
       ],
       "amountYuan": 269.3915,
-      "discountPermille": 950
+      "discountPermille": 950,
+      "periodZone": "北京时间（UTC+8）",
+      "periodStartAt": "2026-07-31T16:00:00.000Z",
+      "periodEndAt": "2026-08-31T16:00:00.000Z",
+      "periodWaybillCount": 7,
+      "firstCreatedAt": "2026-08-03T10:20:00+08:00",
+      "lastCreatedAt": "2026-08-20T08:50:00+08:00"
     }
   ]
 }

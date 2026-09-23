@@ -2,6 +2,7 @@ const { badRequest, notFound } = require('./errors');
 const { load, save, nextId } = require('./store');
 const pricing = require('./pricing');
 const zones = require('./zones');
+const time = require('./time');
 const { findCustomer } = require('./customers');
 
 const SERVICES = ['保价', '签收', '上门'];
@@ -22,9 +23,10 @@ function decorate(waybill, data) {
     billCode: bill ? bill.code : '',
     billStatus: bill ? bill.status : '',
     locked: Boolean(waybill.billId),
+    period: time.periodOf(waybill),
     weightText: Number(waybill.weightKg).toFixed(2) + ' kg',
     volumeText: Number(waybill.volumeM3).toFixed(3) + ' m³',
-    createdAtText: String(waybill.createdAt || '').replace('T', ' ').slice(0, 16),
+    createdAtText: time.bjText(waybill.createdAt),
   });
 }
 
@@ -33,10 +35,12 @@ function listWaybills(query) {
   const keyword = String((query && query.keyword) || '').trim();
   const customerId = String((query && query.customerId) || '').trim();
   const status = String((query && query.status) || '').trim();
+  const period = String((query && query.period) || '').trim();
   const unzoned = String((query && query.unzoned) || '').trim() === '1';
   let items = data.waybills.map((waybill) => decorate(waybill, data));
   if (customerId) items = items.filter((item) => item.customerId === customerId);
   if (status) items = items.filter((item) => item.status === status);
+  if (period) items = items.filter((item) => item.period === period);
   if (unzoned) items = items.filter((item) => !item.zoneKnown);
   if (keyword) {
     const needle = keyword.toLowerCase();
@@ -85,10 +89,12 @@ function validateWaybillPayload(payload, current) {
   if (services.includes('保价') && !(insuredAmountYuan > 0)) {
     throw badRequest('WAYBILL_INSURED_REQUIRED', '选了保价就要填保价金额', { field: 'insuredAmountYuan' });
   }
-  const createdAt = String(next.createdAt || '').trim();
-  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(createdAt)) {
+  const createdAtRaw = String(next.createdAt || '').trim();
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(createdAtRaw)) {
     throw badRequest('WAYBILL_CREATED_INVALID', '创建时刻要形如 2026-09-01 10:30', { field: 'createdAt' });
   }
+  const createdAt = time.canonicalCreatedAt(createdAtRaw);
+  if (!createdAt) throw badRequest('WAYBILL_CREATED_INVALID', '创建时刻要形如 2026-09-01 10:30', { field: 'createdAt' });
   return { code, customerId, fromCity, toCity, status, weightKg, volumeM3, pieces, insuredAmountYuan, services, createdAt };
 }
 
